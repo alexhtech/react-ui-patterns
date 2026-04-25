@@ -2,11 +2,53 @@
 
 Patterns for `react-hook-form` + Zod forms. Pairs with [modals.md](modals.md) — most forms in this app live inside dialogs.
 
-## Schema (Zod)
+## Schema-first workflow
+
+Before writing any form, **derive the schema from the mutation input type** the form will eventually call. Don't invent fields — start from the source of truth (the API contract) and add validation on top.
+
+1. **Locate the input type**:
+   - GraphQL: the codegen-generated `Create<Entity>Input` / `Update<Entity>Input` in `@/core/gql/graphql`.
+   - REST: the OpenAPI-generated request body type from `openapi-fetch`.
+2. **Map each input field to a Zod schema** following the type-specific rules below (IDs → `z.uuidv7()`, enums → `z.enum(...)`, optional/nullable input fields → `.nullable()` or `.optional()`, etc.).
+3. **Propose the schema to the user with variants**. Don't generate the form yet. For each field that has meaningful validation choices (string length, trim, regex, range, custom refinement), show:
+   - **One recommended variant** at the top, marked "(recommended)".
+   - **Up to 4 alternatives** ranging from minimal to strict.
+4. **Wait for confirmation**. The user picks the variants they want; only then generate the form.
+
+### Why this matters
+
+- Surfaces hidden constraints early (max-length limits the backend enforces, regex requirements, etc.) before the form is half-written.
+- Makes validation a deliberate product decision, not a default the user has to push back on later.
+- Catches input-type drift: if the codegen-generated type changed, the schema proposal will change and the user notices.
+
+### Example: variants for a `title: String!` input
+
+```ts
+// 1. Required only (recommended for short freeform text)
+title: z.string().min(1, 'Title is required'),
+
+// 2. Required + max length
+title: z.string().min(1, 'Title is required').max(120, 'Max 120 characters'),
+
+// 3. Trimmed + required + max (strips trailing whitespace before validating)
+title: z.string().trim().min(1, 'Title is required').max(120),
+
+// 4. Required + min/max range + simple alphanumeric guard
+title: z.string().trim().min(3, 'At least 3 characters').max(120).regex(/^[\w\s-]+$/, 'Letters, numbers, spaces, dashes only'),
+
+// 5. Required + custom refinement (e.g. forbid reserved words)
+title: z.string().trim().min(1).refine((v) => !RESERVED_TITLES.includes(v), 'This title is reserved'),
+```
+
+Surface the variants like that — labelled, with the recommendation called out — and let the user pick. The same pattern applies to numeric ranges, enum subsets, optional vs. nullable, etc.
+
+## Schema (Zod) field rules
 
 - One `formSchema = z.object({...})`. Derive `type FormData = z.infer<typeof formSchema>`.
 - **IDs**: `z.uuidv7()` (required) or `z.uuidv7().nullable()` (optional). Never `z.string()` for ids.
 - **Enums**: `z.enum(SomeEnum)` directly on a TS enum (typically GraphQL-generated). Don't use `z.nativeEnum` (deprecated). Don't redeclare a string-literal array next to the enum.
+- **Nullable input fields**: mirror with `.nullable()` so the form's submit type matches the mutation input.
+- **Optional input fields**: `.optional()` only if the field can be entirely absent from the payload; for fields that must be sent but may be `null`, use `.nullable()`.
 - Validation lives in Zod, not in `onSubmit`.
 
 ## Form setup
@@ -63,6 +105,7 @@ For grouping related fields under a single legend, wrap them in `FieldSet` from 
 
 ## Don'ts
 
+- No generating a form before the schema is approved. The schema proposal + variants step (above) is mandatory.
 - No `Select` for typeable lists.
 - No raw `Controller` when `FormField` covers it.
 - No `form.watch()` — use `useWatch`.
